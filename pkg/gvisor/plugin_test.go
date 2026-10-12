@@ -128,45 +128,6 @@ func TestExtractNonSyscallPoint(t *testing.T) {
 	if syscallNumber := extractField(t, plugin, eventReader, "gvisor.sysno"); syscallNumber != nil {
 		t.Errorf("gvisor.sysno = %v, want no value", syscallNumber)
 	}
-	if eventDirection := extractField(t, plugin, eventReader, "evt.dir"); eventDirection != nil {
-		t.Errorf("evt.dir = %v, want no value", eventDirection)
-	}
-}
-
-func TestExtractEventDirection(t *testing.T) {
-	testCases := []struct {
-		name              string
-		messageType       pb.MessageType
-		message           proto.Message
-		expectedDirection string
-	}{
-		{
-			name:              "typed syscall enter",
-			messageType:       pb.MessageType_MESSAGE_SYSCALL_EXECVE,
-			message:           &pb.Execve{Sysno: 221},
-			expectedDirection: ">",
-		},
-		{
-			name:              "typed syscall exit",
-			messageType:       pb.MessageType_MESSAGE_SYSCALL_EXECVE,
-			message:           &pb.Execve{Sysno: 221, Exit: &pb.Exit{Result: 0}},
-			expectedDirection: "<",
-		},
-		{
-			name:              "raw syscall exit",
-			messageType:       pb.MessageType_MESSAGE_SYSCALL_RAW,
-			message:           &pb.Syscall{Sysno: 105, Exit: &pb.Exit{Result: -1, Errorno: 1}},
-			expectedDirection: "<",
-		},
-	}
-	for eventNumber, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			eventReader := &fakeEventReader{eventNumber: uint64(eventNumber), data: mustEncodePacket(t, testCase.messageType, testCase.message)}
-			if eventDirection := extractField(t, &Plugin{}, eventReader, "evt.dir"); eventDirection != testCase.expectedDirection {
-				t.Errorf("evt.dir = %v, want %s", eventDirection, testCase.expectedDirection)
-			}
-		})
-	}
 }
 
 func TestEventTypeFallsBackToMessageTypeForUnknownSyscall(t *testing.T) {

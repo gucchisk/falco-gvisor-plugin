@@ -1,9 +1,13 @@
-# falco.yaml に追加する設定例
+# /etc/falco/config.d/falco.gvisor_plugin.yaml として配置する設定例。
+# config.d のリスト (plugins / load_plugins / rules_files) は falco.yaml に追記されるため、
+# 既存の container プラグインや標準ルールの設定はそのまま残る。
 plugins:
   - name: gvisor
     library_path: /usr/share/falco/plugins/libgvisor.so
     init_config:
-      socketPath: /tmp/gvisor_events.sock  # pod-init.json の sinks[].config.endpoint と一致させる
+      # pod-init.json の sinks[].config.endpoint と一致させる。
+      # systemd の PrivateTmp=true 環境では /tmp が runsc から見えないため /run 配下に置く。
+      socketPath: /run/gvisor_events.sock
       maxEventSize: 65536
     open_params: ""
 
@@ -11,3 +15,5 @@ load_plugins: [gvisor]
 
 rules_files:
   - /etc/falco/gvisor_rules.yaml
+  # gVisor の全イベントをログに出す場合 (デバッグ・監査用)
+  - /etc/falco/gvisor_log_all_rules.yaml

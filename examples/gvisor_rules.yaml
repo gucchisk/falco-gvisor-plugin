@@ -2,36 +2,39 @@
     - name: gvisor
       version: 0.1.0
 
+# Falco 0.45 と同様に、syscall の exit イベントだけを前提にしたルール。
+# (examples/pod-init.json では exit point のみを有効にしている)
+
 - list: gvisor_shell_binaries
   items: [bash, sh, zsh, dash, ash, ksh]
 
-- rule: Shell Executed In gVisor Sandbox
-  desc: Detect a shell executing a new program inside a gVisor sandbox.
-  # enter 時点の proc.name は exec 前のプロセス (シェル) 名。exit 時点では exec 後のプログラム名になる。
-  condition: evt.type in (execve, execveat) and evt.dir = > and proc.name in (gvisor_shell_binaries)
+- rule: Shell Spawned In gVisor Sandbox
+  desc: Detect a shell process being started inside a gVisor sandbox.
+  # execve の exit 時点の proc.name は exec 後のプログラム名になる。
+  condition: evt.type in (execve, execveat) and proc.name in (gvisor_shell_binaries)
   output: >
-    Shell executed a program in gVisor sandbox
-    (proc.name=%proc.name evt.type=%evt.type evt.dir=%evt.dir pid=%gvisor.pid container_id=%gvisor.container_id)
+    Shell spawned in gVisor sandbox
+    (proc.name=%proc.name evt.type=%evt.type pid=%gvisor.pid container_id=%gvisor.container_id)
   priority: NOTICE
   source: gvisor
   tags: [gvisor, process]
 
 - rule: Network Connection From Unexpected Process In gVisor Sandbox
   desc: Detect outbound connect() from processes other than an allowlist.
-  condition: evt.type = connect and evt.dir = < and not proc.name in (curl, wget, python3, node, java)
+  condition: evt.type = connect and not proc.name in (curl, wget, python3, node, java)
   output: >
     Unexpected network connection in gVisor sandbox
-    (proc.name=%proc.name evt.type=%evt.type evt.dir=%evt.dir container_id=%gvisor.container_id)
+    (proc.name=%proc.name evt.type=%evt.type container_id=%gvisor.container_id)
   priority: WARNING
   source: gvisor
   tags: [gvisor, network]
 
 - rule: Kernel Module Load Attempt In gVisor Sandbox
   desc: Detect init_module / finit_module calls inside a gVisor sandbox (raw syscall points).
-  condition: evt.type in (init_module, finit_module) and evt.dir = <
+  condition: evt.type in (init_module, finit_module)
   output: >
     Kernel module load attempted in gVisor sandbox
-    (proc.name=%proc.name evt.type=%evt.type evt.dir=%evt.dir pid=%gvisor.pid container_id=%gvisor.container_id)
+    (proc.name=%proc.name evt.type=%evt.type pid=%gvisor.pid container_id=%gvisor.container_id)
   priority: WARNING
   source: gvisor
   tags: [gvisor, kernel_module]

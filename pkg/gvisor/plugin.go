@@ -114,7 +114,6 @@ func (p *Plugin) Fields() []sdk.FieldEntry {
 	return []sdk.FieldEntry{
 		{Type: "string", Name: "proc.name", Display: "Process Name", Desc: "The name (excluding the path) of the executable generating the event. Requires the 'process_name' context field in the gVisor trace session."},
 		{Type: "string", Name: "evt.type", Display: "Event Type", Desc: "The name of the event (e.g. 'openat', 'execve'). For non-syscall gVisor points, the point name (e.g. 'sentry_clone', 'container_start')."},
-		{Type: "string", Name: "evt.dir", Display: "Event Direction", Desc: "'>' for syscall enter events, '<' for syscall exit events. No value for non-syscall gVisor points."},
 		{Type: "uint64", Name: "gvisor.sysno", Display: "Syscall Number", Desc: "The raw syscall number reported by gVisor."},
 		{Type: "string", Name: "gvisor.container_id", Display: "Container ID", Desc: "The container ID reported by gVisor. Requires the 'container_id' context field."},
 		{Type: "uint64", Name: "gvisor.pid", Display: "Process ID", Desc: "The thread group ID (PID) inside the sandbox. Requires the 'group_id' context field."},
@@ -133,11 +132,6 @@ func (p *Plugin) Extract(request sdk.ExtractRequest, eventReader sdk.EventReader
 		request.SetValue(event.ProcessName())
 	case "evt.type":
 		request.SetValue(event.EventType())
-	case "evt.dir":
-		if !event.HasSyscall {
-			return nil // syscall 以外のイベントでは値なし
-		}
-		request.SetValue(event.EventDirection())
 	case "gvisor.sysno":
 		if !event.HasSyscall {
 			return nil // syscall 以外のイベントでは値なし
@@ -161,12 +155,8 @@ func (p *Plugin) String(eventReader sdk.EventReader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	eventDirection := ""
-	if event.HasSyscall {
-		eventDirection = event.EventDirection()
-	}
-	return fmt.Sprintf("evt.type=%s evt.dir=%s proc.name=%s container_id=%s",
-		event.EventType(), eventDirection, event.ProcessName(), event.ContextData.GetContainerId()), nil
+	return fmt.Sprintf("evt.type=%s proc.name=%s container_id=%s",
+		event.EventType(), event.ProcessName(), event.ContextData.GetContainerId()), nil
 }
 
 func (p *Plugin) decodeEventWithCache(eventReader sdk.EventReader) (*gVisorEvent, error) {

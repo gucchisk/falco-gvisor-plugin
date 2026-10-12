@@ -32,17 +32,6 @@ type gVisorEvent struct {
 	ContextData   *pb.ContextData
 	SyscallNumber uint64
 	HasSyscall    bool
-	// IsSyscallExit は syscall の exit point で記録されたイベントかどうか。
-	// gVisor は exit point のときだけ Exit (戻り値・errno) を設定する。
-	IsSyscallExit bool
-}
-
-// EventDirection は Falco の evt.dir と同様に、enter なら ">"、exit なら "<" を返す。
-func (event *gVisorEvent) EventDirection() string {
-	if event.IsSyscallExit {
-		return "<"
-	}
-	return ">"
 }
 
 // EventType は Falco の evt.type と同様の値 (例: "openat", "execve") を返す。
@@ -195,9 +184,6 @@ func decodeGVisorEvent(packet []byte) (*gVisorEvent, error) {
 	if messageWithSyscall, ok := message.(interface{ GetSysno() uint64 }); ok {
 		event.SyscallNumber = messageWithSyscall.GetSysno()
 		event.HasSyscall = true
-	}
-	if messageWithExit, ok := message.(interface{ GetExit() *pb.Exit }); ok {
-		event.IsSyscallExit = messageWithExit.GetExit() != nil
 	}
 	return event, nil
 }

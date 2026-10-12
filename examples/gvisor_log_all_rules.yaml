@@ -1,0 +1,17 @@
+- required_plugin_versions:
+    - name: gvisor
+      version: 0.1.0
+
+# Falco はルールに一致したイベントしか出力しないため、
+# gVisor から届いた全イベントを確認したい場合はこのルールを読み込む。
+# イベント数が非常に多くなるので、デバッグ・監査用途に限って使うこと。
+
+- rule: gVisor Event
+  desc: Log every event received from gVisor runtime monitoring (debug / audit use; high volume).
+  condition: evt.type exists
+  output: >
+    gVisor event (evt.type=%evt.type proc.name=%proc.name pid=%gvisor.pid
+    tid=%gvisor.tid sysno=%gvisor.sysno container_id=%gvisor.container_id)
+  priority: DEBUG
+  source: gvisor
+  tags: [gvisor, audit]

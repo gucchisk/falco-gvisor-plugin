@@ -1,0 +1,38 @@
+{
+  "trace_session": {
+    "name": "Default",
+    "points": [
+      {"name": "syscall/connect/enter", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/connect/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/dup/enter", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/dup/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/dup3/enter", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/dup3/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/execve/enter", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/execve/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/execveat/enter", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/execveat/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/openat/enter", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/openat/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/ptrace/enter", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/ptrace/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/socket/enter", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/socket/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/sysno/36/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/sysno/37/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/sysno/105/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/sysno/206/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/sysno/211/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/sysno/273/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]},
+      {"name": "syscall/sysno/437/exit", "context_fields": ["time", "container_id", "thread_id", "group_id", "process_name"]}
+    ],
+    "sinks": [
+      {
+        "name": "remote",
+        "config": {
+          "endpoint": "/tmp/gvisor_events.sock"
+        }
+      }
+    ]
+  }
+}

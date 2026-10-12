@@ -1,0 +1,13 @@
+# falco.yaml に追加する設定例
+plugins:
+  - name: gvisor
+    library_path: /usr/share/falco/plugins/libgvisor.so
+    init_config:
+      socketPath: /tmp/gvisor_events.sock  # pod-init.json の sinks[].config.endpoint と一致させる
+      maxEventSize: 65536
+    open_params: ""
+
+load_plugins: [gvisor]
+
+rules_files:
+  - /etc/falco/gvisor_rules.yaml

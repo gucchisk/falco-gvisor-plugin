@@ -15,5 +15,7 @@ load_plugins: [gvisor]
 
 rules_files:
   - /etc/falco/gvisor_rules.yaml
+  # Falco 標準ルールを gVisor 用に移植したルール
+  - /etc/falco/gvisor_falco_rules.yaml
   # gVisor の全イベントをログに出す場合 (デバッグ・監査用)
   - /etc/falco/gvisor_log_all_rules.yaml

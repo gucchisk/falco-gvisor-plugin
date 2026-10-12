@@ -66,7 +66,7 @@ func TestServerReceivesEventsFromGVisorSink(t *testing.T) {
 		if !pushEvent.Timestamp.Equal(eventTime) {
 			t.Errorf("timestamp = %v, want %v", pushEvent.Timestamp, eventTime)
 		}
-		event, err := decodeGVisorEvent(pushEvent.Data)
+		event, err := decodeEnrichedEvent(pushEvent.Data)
 		if err != nil {
 			t.Fatal(err)
 		}

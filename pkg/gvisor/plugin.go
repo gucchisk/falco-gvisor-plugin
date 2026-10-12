@@ -17,7 +17,7 @@ const (
 	PluginName               = "gvisor"
 	PluginDescription        = "Receives syscall events from gVisor runtime monitoring and sends them to Falco"
 	PluginContact            = "github.com/gucchi/falco-gvisor-plugin"
-	PluginVersion            = "0.1.0"
+	PluginVersion            = "0.2.0"
 	PluginEventSource        = "gvisor"
 
 	defaultSocketPath   = "/run/falco/gvisor.sock"
@@ -42,7 +42,7 @@ type Plugin struct {
 	// Falco は同一イベントに対して複数フィールドを順に抽出するため、
 	// 直前にデコードしたイベントを保持して再デコードを避ける。
 	cachedEventNumber uint64
-	cachedEvent       *gVisorEvent
+	cachedEvent       *enrichedEvent
 }
 
 func (p *Plugin) Info() *plugins.Info {
@@ -105,20 +105,18 @@ func (p *Plugin) Open(params string) (source.Instance, error) {
 	}
 	return source.NewPushInstance(
 		events,
-		source.WithInstanceEventSize(p.config.MaxEventSize),
+		// gVisor のメッセージにプロセス情報を付け足すため、その分だけ大きくする。
+		source.WithInstanceEventSize(p.config.MaxEventSize+enrichedEventHeaderSize+maxProcessContextBytes),
 		source.WithInstanceClose(server.Stop),
 	)
 }
 
 func (p *Plugin) Fields() []sdk.FieldEntry {
-	return []sdk.FieldEntry{
-		{Type: "string", Name: "proc.name", Display: "Process Name", Desc: "The name (excluding the path) of the executable generating the event. Requires the 'process_name' context field in the gVisor trace session."},
-		{Type: "string", Name: "evt.type", Display: "Event Type", Desc: "The name of the event (e.g. 'openat', 'execve'). For non-syscall gVisor points, the point name (e.g. 'sentry_clone', 'container_start')."},
-		{Type: "uint64", Name: "gvisor.sysno", Display: "Syscall Number", Desc: "The raw syscall number reported by gVisor."},
-		{Type: "string", Name: "gvisor.container_id", Display: "Container ID", Desc: "The container ID reported by gVisor. Requires the 'container_id' context field."},
-		{Type: "uint64", Name: "gvisor.pid", Display: "Process ID", Desc: "The thread group ID (PID) inside the sandbox. Requires the 'group_id' context field."},
-		{Type: "uint64", Name: "gvisor.tid", Display: "Thread ID", Desc: "The thread ID inside the sandbox. Requires the 'thread_id' context field."},
+	fieldEntries := make([]sdk.FieldEntry, 0, len(fieldDefinitions))
+	for _, definition := range fieldDefinitions {
+		fieldEntries = append(fieldEntries, definition.entry)
 	}
+	return fieldEntries
 }
 
 func (p *Plugin) Extract(request sdk.ExtractRequest, eventReader sdk.EventReader) error {
@@ -126,26 +124,11 @@ func (p *Plugin) Extract(request sdk.ExtractRequest, eventReader sdk.EventReader
 	if err != nil {
 		return err
 	}
-
-	switch request.Field() {
-	case "proc.name":
-		request.SetValue(event.ProcessName())
-	case "evt.type":
-		request.SetValue(event.EventType())
-	case "gvisor.sysno":
-		if !event.HasSyscall {
-			return nil // syscall 以外のイベントでは値なし
-		}
-		request.SetValue(event.SyscallNumber)
-	case "gvisor.container_id":
-		request.SetValue(event.ContextData.GetContainerId())
-	case "gvisor.pid":
-		request.SetValue(uint64(event.ContextData.GetThreadGroupId()))
-	case "gvisor.tid":
-		request.SetValue(uint64(event.ContextData.GetThreadId()))
-	default:
+	extract, found := fieldExtractorsByName[request.Field()]
+	if !found {
 		return fmt.Errorf("unsupported field: %s", request.Field())
 	}
+	extract(event, request)
 	return nil
 }
 
@@ -156,19 +139,19 @@ func (p *Plugin) String(eventReader sdk.EventReader) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("evt.type=%s proc.name=%s container_id=%s",
-		event.EventType(), event.ProcessName(), event.ContextData.GetContainerId()), nil
+		event.GVisorEvent.EventType(), event.ProcessName(), event.GVisorEvent.ContextData.GetContainerId()), nil
 }
 
-func (p *Plugin) decodeEventWithCache(eventReader sdk.EventReader) (*gVisorEvent, error) {
+func (p *Plugin) decodeEventWithCache(eventReader sdk.EventReader) (*enrichedEvent, error) {
 	eventNumber := eventReader.EventNum()
 	if p.cachedEvent != nil && p.cachedEventNumber == eventNumber {
 		return p.cachedEvent, nil
 	}
-	packet, err := io.ReadAll(eventReader.Reader())
+	eventData, err := io.ReadAll(eventReader.Reader())
 	if err != nil {
 		return nil, err
 	}
-	event, err := decodeGVisorEvent(packet)
+	event, err := decodeEnrichedEvent(eventData)
 	if err != nil {
 		return nil, err
 	}

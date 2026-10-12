@@ -1,6 +1,6 @@
 - required_plugin_versions:
     - name: gvisor
-      version: 0.1.0
+      version: 0.2.0
 
 # Falco 0.45 と同様に、syscall の exit イベントだけを前提にしたルール。
 # (examples/pod-init.json では exit point のみを有効にしている)
@@ -10,21 +10,24 @@
 
 - rule: Shell Spawned In gVisor Sandbox
   desc: Detect a shell process being started inside a gVisor sandbox.
-  # execve の exit 時点の proc.name は exec 後のプログラム名になる。
-  condition: evt.type in (execve, execveat) and proc.name in (gvisor_shell_binaries)
+  # proc.name は exec 後のプログラム名 (sentry/execve の point でプロセス表を更新するため)。
+  # sentry/execve を有効にしていない場合は、exec 前の名前 (シェルが実行したコマンドの親) になる。
+  condition: evt.type in (execve, execveat) and evt.res = SUCCESS and proc.name in (gvisor_shell_binaries)
   output: >
     Shell spawned in gVisor sandbox
-    (proc.name=%proc.name evt.type=%evt.type pid=%gvisor.pid container_id=%gvisor.container_id)
+    (proc.name=%proc.name command=%proc.cmdline parent=%proc.pname evt.type=%evt.type pid=%proc.pid
+    container_id=%gvisor.container_id)
   priority: NOTICE
   source: gvisor
   tags: [gvisor, process]
 
 - rule: Network Connection From Unexpected Process In gVisor Sandbox
-  desc: Detect outbound connect() from processes other than an allowlist.
-  condition: evt.type = connect and not proc.name in (curl, wget, python3, node, java)
+  desc: Detect outbound inet connect() from processes other than an allowlist (unix sockets such as nscd are ignored).
+  condition: evt.type = connect and fd.type in (ipv4, ipv6) and not proc.name in (curl, wget, python3, node, java)
   output: >
     Unexpected network connection in gVisor sandbox
-    (proc.name=%proc.name evt.type=%evt.type container_id=%gvisor.container_id)
+    (proc.name=%proc.name connection=%fd.name evt.res=%evt.res command=%proc.cmdline evt.type=%evt.type
+    container_id=%gvisor.container_id)
   priority: WARNING
   source: gvisor
   tags: [gvisor, network]
@@ -34,7 +37,7 @@
   condition: evt.type in (init_module, finit_module)
   output: >
     Kernel module load attempted in gVisor sandbox
-    (proc.name=%proc.name evt.type=%evt.type pid=%gvisor.pid container_id=%gvisor.container_id)
+    (proc.name=%proc.name evt.type=%evt.type evt.res=%evt.res pid=%proc.pid container_id=%gvisor.container_id)
   priority: WARNING
   source: gvisor
   tags: [gvisor, kernel_module]

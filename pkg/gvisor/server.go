@@ -113,6 +113,8 @@ func (server *gVisorEventServer) handleConnection(serverContext context.Context,
 		return
 	}
 
+	// PID はサンドボックスごとに独立しているため、プロセス表は接続ごとに持つ。
+	processes := newProcessTable()
 	packetBuffer := make([]byte, server.maxEventSize)
 	for {
 		packetLength, _, receiveFlags, _, err := connection.ReadMsgUnix(packetBuffer, nil)
@@ -129,15 +131,10 @@ func (server *gVisorEventServer) handleConnection(serverContext context.Context,
 			continue
 		}
 
-		// packetBuffer は次の読み込みで再利用されるためコピーしてから渡す。
-		packet := make([]byte, packetLength)
-		copy(packet, packetBuffer[:packetLength])
-
-		pushEvent := source.PushEvent{Data: packet}
-		if event, err := decodeGVisorEvent(packet); err == nil {
-			if timeNs := event.ContextData.GetTimeNs(); timeNs > 0 {
-				pushEvent.Timestamp = time.Unix(0, timeNs)
-			}
+		pushEvent, err := buildPushEvent(processes, packetBuffer[:packetLength])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gvisor plugin: dropped message: %v\n", err)
+			continue
 		}
 
 		select {
@@ -146,6 +143,26 @@ func (server *gVisorEventServer) handleConnection(serverContext context.Context,
 			return
 		}
 	}
+}
+
+// buildPushEvent は gVisor のパケットでプロセス表を更新し、
+// プロセス情報を埋め込んだ Falco のイベントを作る。
+func buildPushEvent(processes *processTable, packet []byte) (source.PushEvent, error) {
+	event, err := decodeGVisorEvent(packet)
+	if err != nil {
+		return source.PushEvent{}, err
+	}
+	processContext := processes.recordEvent(event)
+	// encodeEnrichedEvent は新しいバッファにコピーするため、packet (受信バッファ) は再利用してよい。
+	eventData, err := encodeEnrichedEvent(processContext, packet)
+	if err != nil {
+		return source.PushEvent{}, err
+	}
+	pushEvent := source.PushEvent{Data: eventData}
+	if timeNs := event.ContextData.GetTimeNs(); timeNs > 0 {
+		pushEvent.Timestamp = time.Unix(0, timeNs)
+	}
+	return pushEvent, nil
 }
 
 // performHandshake は gVisor の remote sink とのハンドシェイクを行う。

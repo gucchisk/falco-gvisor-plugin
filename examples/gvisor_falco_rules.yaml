@@ -1,0 +1,457 @@
+# Falco 標準ルール (falco_rules.yaml) のうち、gVisor プラグインのフィールドで判定できるものを移植したルール。
+#
+# - 標準ルールと同時に読み込めるよう、ルール・マクロ・リストの名前はすべて gVisor 用に変えている
+#   (同名にすると標準ルールの定義を上書き・追記してしまうため)。
+# - gVisor のイベントはすべてコンテナ内のものなので、標準ルールの `container` 条件は省いている。
+# - user.name / user.loginuid / container.image.* など、このプラグインが提供しないフィールドは
+#   条件・出力から外している。外した条件は各ルールのコメントに記載した。
+# - 例外リスト (標準ルールの known_* / user_known_* など) は、コンテナで使われるものに絞っている。
+#
+# examples/pod-init.json の trace point (sentry/execve などのプロセス追跡用 point と、
+# cwd / credentials / parent_thread_group_id / is_exec_session の context field) が必要。
+
+- required_plugin_versions:
+    - name: gvisor
+      version: 0.2.0
+
+# ---------------------------------------------------------------------------
+# マクロ・リスト
+# ---------------------------------------------------------------------------
+
+# 標準ルールの spawned_process と違い、失敗した execve は除く
+# (失敗時は exec 前のプロセス名のままなので、シェルなどの誤検知につながる)。
+- macro: gvisor_spawned_process
+  condition: (evt.type in (execve, execveat) and evt.res = SUCCESS)
+
+- macro: gvisor_open_read
+  condition: (evt.type in (open, openat, openat2) and evt.is_open_read=true and fd.typechar='f' and fd.num exists)
+
+- macro: gvisor_open_write
+  condition: (evt.type in (open, openat, openat2) and evt.is_open_write=true and fd.typechar='f' and fd.num exists)
+
+- macro: gvisor_open_file_failed
+  condition: (evt.type in (open, openat, openat2) and fd.typechar='f' and evt.failed=true)
+
+- list: gvisor_shell_binaries
+  items: [ash, bash, csh, ksh, sh, tcsh, zsh, dash]
+
+- macro: gvisor_shell_procs
+  condition: (proc.name in (gvisor_shell_binaries))
+
+- list: gvisor_sensitive_file_names
+  items: [/etc/shadow, /etc/sudoers, /etc/pam.conf, /etc/security/pwquality.conf]
+
+- macro: gvisor_sensitive_files
+  condition: >
+    (fd.name in (gvisor_sensitive_file_names) or
+     fd.directory in (/etc/sudoers.d, /etc/pam.d))
+
+- list: gvisor_user_mgmt_binaries
+  items: [
+    login, passwd, chpasswd, chage, useradd, userdel, usermod, groupadd, groupdel, groupmod,
+    adduser, deluser, addgroup, delgroup, newusers, gpasswd, vipw, vigr, pwck, grpck,
+    shadowconfig, pwconv, pwunconv, grpconv, grpunconv, su, sudo, unix_chkpwd
+    ]
+
+- list: gvisor_package_mgmt_binaries
+  items: [dpkg, dpkg-preconfigu, dnf, dnf-automatic, rpm, rpmkey, yum, apt, apt-get, aptitude, apk, pip, pip3, snap]
+
+- list: gvisor_read_sensitive_file_binaries
+  items: [iptables, ps, lsb_release, sshd, sshd-session, vsftpd, systemd, psql, screen, pam-auth-update, pam-config, lsattr, file, sosreport]
+
+- macro: gvisor_user_known_read_sensitive_files_activities
+  condition: (evt.type = none)
+
+# 子プロセスとしてシェルを起動するのは不審なアプリケーション (標準ルールの protected_shell_spawning_binaries 相当)。
+- list: gvisor_protected_shell_spawning_binaries
+  items: [
+    nginx, apache2, httpd, lighttpd, caddy, haproxy,
+    node, nodejs, java, php-fpm, php-cgi, uwsgi, gunicorn, unicorn, puma, ruby, perl,
+    mysqld, mariadbd, postgres, redis-server, mongod, memcached, elasticsearch, tomcat, jboss
+    ]
+
+- macro: gvisor_user_shell_container_exclusions
+  condition: (evt.type = none)
+
+- list: gvisor_grep_binaries
+  items: [grep, egrep, fgrep]
+
+- macro: gvisor_grep_commands
+  condition: (proc.name in (gvisor_grep_binaries))
+
+- macro: gvisor_private_key_or_password
+  condition: >
+    (proc.args icontains "BEGIN PRIVATE" or
+     proc.args icontains "BEGIN OPENSSH PRIVATE" or
+     proc.args icontains "BEGIN RSA PRIVATE" or
+     proc.args icontains "BEGIN DSA PRIVATE" or
+     proc.args icontains "BEGIN EC PRIVATE")
+
+- macro: gvisor_private_aws_credentials
+  condition: >
+    (proc.args icontains "aws_access_key_id" or
+     proc.args icontains "aws_secret_access_key" or
+     proc.args icontains "aws_session_token" or
+     proc.args icontains "accesskeyid" or
+     proc.args icontains "secretaccesskey")
+
+- list: gvisor_log_directories
+  items: [/var/log, /dev/log]
+
+- list: gvisor_log_files
+  items: [syslog, auth.log, secure, kern.log, cron, user.log, dpkg.log, last.log, yum.log, access_log, mysql.log, mysqld.log]
+
+- macro: gvisor_access_log_files
+  condition: (fd.directory in (gvisor_log_directories) or fd.filename in (gvisor_log_files))
+
+- list: gvisor_data_remove_commands
+  items: [shred, mkfs, mke2fs]
+
+- list: gvisor_known_ptrace_binaries
+  items: []
+
+- macro: gvisor_ptrace_attach_or_injection
+  condition: >
+    (evt.type=ptrace and
+     evt.arg.request in (PTRACE_POKETEXT, PTRACE_POKEDATA, PTRACE_ATTACH, PTRACE_SEIZE, PTRACE_SETREGS))
+
+- list: gvisor_user_known_packet_socket_binaries
+  items: []
+
+- list: gvisor_known_drop_and_execute_binaries
+  items: []
+
+- list: gvisor_known_memfd_execution_binaries
+  items: [runc]
+
+# 標準ルールは fd.sip.name="kubernetes.default.svc.cluster.local" で判定するが、
+# このプラグインは DNS 名を解決しないため、API サーバ (kubernetes Service) の ClusterIP を列挙する。
+# kubeadm の既定値は 10.96.0.1 (`kubectl get svc kubernetes -n default` で確認できる)。
+- list: gvisor_k8s_api_server_addresses
+  items: ['"10.96.0.1"']
+
+- list: gvisor_k8s_api_server_ports
+  items: [443, 6443]
+
+- list: gvisor_ssh_non_standard_ports
+  items: [80, 8080, 88, 443, 8443, 53, 4444]
+
+# 標準ルールの outbound からプライベートアドレス除外 (fd.snet in (rfc_1918_addresses)) を省いたもの。
+- macro: gvisor_outbound
+  condition: >
+    (evt.type = connect and
+     fd.typechar in (4, 6) and
+     (evt.rawres exists or evt.res = EINPROGRESS))
+
+# ---------------------------------------------------------------------------
+# ルール
+# ---------------------------------------------------------------------------
+
+- rule: Directory traversal monitored file read (gVisor)
+  desc: >
+    Port of "Directory traversal monitored file read". Detects reading files under /etc or ~/.ssh
+    via a path containing "../" (e.g. arbitrary file read in a web application).
+  condition: >
+    (gvisor_open_read or gvisor_open_file_failed)
+    and (fd.name startswith /etc/ or
+         (fd.name contains '/.ssh/' and fd.name glob '/home/*/.ssh/*') or
+         fd.name startswith /root/.ssh or
+         fd.name contains "id_rsa")
+    and (fd.nameraw contains '../' and fd.nameraw glob '*../*../*')
+    and not proc.pname in (gvisor_shell_binaries)
+  output: >
+    Read monitored file via directory traversal | file=%fd.name fileraw=%fd.nameraw gparent=%proc.aname[2]
+    ggparent=%proc.aname[3] evt_type=%evt.type user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath
+    parent=%proc.pname command=%proc.cmdline container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, filesystem, mitre_credential_access, T1555]
+
+- rule: Read sensitive file untrusted (gVisor)
+  desc: >
+    Port of "Read sensitive file untrusted". The exceptions based on user.name / container.image.repository
+    and the vendor specific macros (qualys, chef, ...) are omitted.
+  condition: >
+    gvisor_open_read
+    and gvisor_sensitive_files
+    and proc.name exists
+    and not proc.name in (gvisor_user_mgmt_binaries, gvisor_package_mgmt_binaries,
+                          gvisor_read_sensitive_file_binaries, gvisor_shell_binaries)
+    and not (proc.name in (cmp, cp) and proc.pname in (passwd, run-parts))
+    and not gvisor_user_known_read_sensitive_files_activities
+  output: >
+    Sensitive file opened for reading by non-trusted program | file=%fd.name gparent=%proc.aname[2]
+    ggparent=%proc.aname[3] gggparent=%proc.aname[4] evt_type=%evt.type user_uid=%user.uid process=%proc.name
+    proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty
+    container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, filesystem, mitre_credential_access, T1555]
+
+- rule: Run shell untrusted (gVisor)
+  desc: >
+    Port of "Run shell untrusted". Detects a shell spawned below a server application.
+    Falco's 'proc.aname in (...)' (any ancestor) is written as 'gvisor.anames intersects (...)'.
+  condition: >
+    gvisor_spawned_process
+    and gvisor_shell_procs
+    and proc.pname exists
+    and gvisor.anames intersects (gvisor_protected_shell_spawning_binaries)
+    and not proc.pname in (gvisor_shell_binaries, gvisor_package_mgmt_binaries, logrotate, runsv, svlogd)
+    and not gvisor_user_shell_container_exclusions
+  output: >
+    Shell spawned by untrusted binary | parent_exe=%proc.pexe parent_exepath=%proc.pexepath pcmdline=%proc.pcmdline
+    gparent=%proc.aname[2] ggparent=%proc.aname[3] evt_type=%evt.type user_uid=%user.uid process=%proc.name
+    proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty
+    container_id=%gvisor.container_id
+  priority: NOTICE
+  source: gvisor
+  tags: [gvisor, process, shell, mitre_execution, T1059.004]
+
+- rule: Terminal shell in container (gVisor)
+  desc: >
+    Port of "Terminal shell in container". proc.tty is approximated from the standard streams at exec time
+    (the 'fd_info' optional field of sentry/execve). The standard container_entrypoint macro (parent is the
+    container runtime) is replaced by gvisor.is_exec_session (process created by 'kubectl exec').
+    A shell started directly by 'kubectl exec -it' has no execve event in gVisor, so this rule fires for
+    shells started inside such a session (e.g. 'bash' started from 'sh').
+  condition: >
+    gvisor_spawned_process
+    and gvisor_shell_procs
+    and proc.tty != 0
+    and (gvisor.is_exec_session = true or not proc.pname exists)
+  output: >
+    A shell was spawned in a container with an attached terminal | evt_type=%evt.type user_uid=%user.uid
+    process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty
+    exec_session=%gvisor.is_exec_session container_id=%gvisor.container_id
+  priority: NOTICE
+  source: gvisor
+  tags: [gvisor, shell, mitre_execution, T1059]
+
+- rule: Contact K8S API Server From Container (gVisor)
+  desc: >
+    Port of "Contact K8S API Server From Container". The API server is identified by the ClusterIP in
+    gvisor_k8s_api_server_addresses instead of the DNS name. The k8s_containers exception is omitted.
+  condition: >
+    evt.type = connect
+    and fd.typechar in (4, 6)
+    and fd.sip in (gvisor_k8s_api_server_addresses)
+    and fd.sport in (gvisor_k8s_api_server_ports)
+  output: >
+    Unexpected connection to K8s API Server from container | connection=%fd.name rport=%fd.rport fd_type=%fd.type
+    evt_type=%evt.type evt_res=%evt.res user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath
+    parent=%proc.pname command=%proc.cmdline container_id=%gvisor.container_id
+  priority: NOTICE
+  source: gvisor
+  tags: [gvisor, network, k8s, mitre_discovery, T1565]
+
+- rule: Netcat Remote Code Execution in Container (gVisor)
+  desc: Port of "Netcat Remote Code Execution in Container".
+  condition: >
+    gvisor_spawned_process
+    and ((proc.name = "nc" and (proc.cmdline contains " -e" or proc.cmdline contains " -c")) or
+         (proc.name = "ncat" and (proc.args contains "--sh-exec" or proc.args contains "--exec" or
+                                  proc.args contains "-e " or proc.args contains "-c " or
+                                  proc.args contains "--lua-exec")))
+  output: >
+    Netcat runs inside container that allows remote code execution | evt_type=%evt.type user_uid=%user.uid
+    process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty
+    container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, network, process, mitre_execution, T1059]
+
+- rule: Redirect STDOUT/STDIN to Network Connection in Container (gVisor)
+  desc: >
+    Alternative to "Redirect STDOUT/STDIN to Network Connection in Container". The standard rule inspects
+    dup2/dup3 onto fd 0-2, but gVisor does not report the socket family of the duplicated fd.
+    Instead, this rule detects a shell executed with stdin/stdout connected to an inet socket (reverse shell),
+    using the 'fd_info' optional field of sentry/execve.
+  condition: >
+    gvisor_spawned_process
+    and gvisor_shell_procs
+    and (proc.stdin.type in (ipv4, ipv6) or proc.stdout.type in (ipv4, ipv6))
+  output: >
+    Shell started with stdin/stdout redirected to network connection | stdin_type=%proc.stdin.type
+    stdout_type=%proc.stdout.type gparent=%proc.aname[2] evt_type=%evt.type user_uid=%user.uid process=%proc.name
+    proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline container_id=%gvisor.container_id
+  priority: NOTICE
+  source: gvisor
+  tags: [gvisor, network, process, mitre_execution, T1059]
+
+- rule: Search Private Keys or Passwords (gVisor)
+  desc: Port of "Search Private Keys or Passwords".
+  condition: >
+    gvisor_spawned_process
+    and ((gvisor_grep_commands and gvisor_private_key_or_password) or
+         (proc.name = "find" and (proc.args contains "id_rsa" or proc.args contains "id_dsa" or
+                                  proc.args contains "id_ed25519" or proc.args contains "id_ecdsa")))
+  output: >
+    Grep private keys or passwords activities found | evt_type=%evt.type user_uid=%user.uid process=%proc.name
+    proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty
+    container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, process, filesystem, mitre_credential_access, T1552.001]
+
+- rule: Clear Log Activities (gVisor)
+  desc: Port of "Clear Log Activities". The trusted_logging_images exception is omitted.
+  condition: >
+    gvisor_open_write
+    and gvisor_access_log_files
+    and evt.arg.flags contains "O_TRUNC"
+  output: >
+    Log files were tampered | file=%fd.name evt_type=%evt.type user_uid=%user.uid process=%proc.name
+    proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty
+    container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, filesystem, mitre_defense_evasion, T1070]
+
+- rule: Remove Bulk Data from Disk (gVisor)
+  desc: Port of "Remove Bulk Data from Disk".
+  condition: >
+    gvisor_spawned_process
+    and proc.name in (gvisor_data_remove_commands)
+  output: >
+    Bulk data has been removed from disk | evt_type=%evt.type user_uid=%user.uid process=%proc.name
+    proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty
+    container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, process, filesystem, mitre_impact, T1485]
+
+- rule: Packet socket created in container (gVisor)
+  desc: Port of "Packet socket created in container".
+  condition: >
+    evt.type = socket
+    and evt.arg.domain contains AF_PACKET
+    and not proc.name in (gvisor_user_known_packet_socket_binaries)
+  output: >
+    Packet socket was created in a container | domain=%evt.arg.domain evt_res=%evt.res evt_type=%evt.type
+    user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline
+    container_id=%gvisor.container_id
+  priority: NOTICE
+  source: gvisor
+  tags: [gvisor, network, mitre_credential_access, T1557.002]
+
+- rule: PTRACE attached to process (gVisor)
+  desc: Port of "PTRACE attached to process".
+  condition: >
+    gvisor_ptrace_attach_or_injection
+    and proc.name exists
+    and not proc.name in (gvisor_known_ptrace_binaries)
+  output: >
+    Detected ptrace PTRACE_ATTACH attempt | request=%evt.arg.request proc_pcmdline=%proc.pcmdline
+    evt_type=%evt.type user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname
+    command=%proc.cmdline container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, process, mitre_privilege_escalation, T1055.008]
+
+- rule: PTRACE anti-debug attempt (gVisor)
+  desc: Port of "PTRACE anti-debug attempt".
+  condition: >
+    evt.type = ptrace
+    and evt.arg.request = PTRACE_TRACEME
+    and proc.name exists
+  output: >
+    Detected potential PTRACE_TRACEME anti-debug attempt | proc_pcmdline=%proc.pcmdline evt_type=%evt.type
+    user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline
+    container_id=%gvisor.container_id
+  priority: NOTICE
+  source: gvisor
+  tags: [gvisor, process, mitre_defense_evasion, T1622]
+
+- rule: Find AWS Credentials (gVisor)
+  desc: Port of "Find AWS Credentials".
+  condition: >
+    gvisor_spawned_process
+    and ((gvisor_grep_commands and gvisor_private_aws_credentials) or
+         (proc.name = "find" and proc.args endswith ".aws/credentials"))
+  output: >
+    Detected AWS credentials search activity | proc_pcmdline=%proc.pcmdline proc_cwd=%proc.cwd group_gid=%group.gid
+    evt_type=%evt.type user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname
+    command=%proc.cmdline container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, process, aws, mitre_credential_access, T1552]
+
+- rule: Execution from /dev/shm (gVisor)
+  desc: Port of "Execution from /dev/shm". The trusted image exception is omitted.
+  condition: >
+    gvisor_spawned_process
+    and (proc.exe startswith "/dev/shm/" or
+         proc.exepath startswith "/dev/shm/" or
+         (proc.cwd startswith "/dev/shm/" and proc.exe startswith "./") or
+         (gvisor_shell_procs and proc.args startswith "-c /dev/shm") or
+         (gvisor_shell_procs and proc.args startswith "-i /dev/shm") or
+         (gvisor_shell_procs and proc.args startswith "/dev/shm") or
+         (proc.cwd startswith "/dev/shm/" and proc.args startswith "./"))
+  output: >
+    File execution detected from /dev/shm | evt_res=%evt.res proc_cwd=%proc.cwd proc_pcmdline=%proc.pcmdline
+    group_gid=%group.gid evt_type=%evt.type user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath
+    parent=%proc.pname command=%proc.cmdline container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, mitre_execution, T1059.004]
+
+- rule: Drop and execute new binary in container (gVisor)
+  desc: >
+    Port of "Drop and execute new binary in container". Uses the 'binary_info' optional field of
+    sentry/execve (BinaryOverlayfsUpper). Requires the rootfs overlay of gVisor (enabled by default).
+  condition: >
+    gvisor_spawned_process
+    and proc.is_exe_upper_layer = true
+    and not proc.name in (gvisor_known_drop_and_execute_binaries)
+  output: >
+    Executing binary not part of base image | proc_exe=%proc.exe gparent=%proc.aname[2] proc_cwd=%proc.cwd
+    evt_type=%evt.type user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname
+    command=%proc.cmdline terminal=%proc.tty container_id=%gvisor.container_id
+  priority: CRITICAL
+  source: gvisor
+  tags: [gvisor, process, mitre_persistence, TA0003]
+
+- rule: Disallowed SSH Connection Non Standard Port (gVisor)
+  desc: >
+    Port of "Disallowed SSH Connection Non Standard Port". fd.l4proto and the private address exclusion
+    are not available and are omitted.
+  condition: >
+    gvisor_outbound
+    and proc.exe endswith ssh
+    and fd.sport in (gvisor_ssh_non_standard_ports)
+  output: >
+    Disallowed SSH Connection | connection=%fd.name rport=%fd.rport fd_type=%fd.type evt_type=%evt.type
+    user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline
+    container_id=%gvisor.container_id
+  priority: NOTICE
+  source: gvisor
+  tags: [gvisor, network, process, mitre_execution, T1059]
+
+- rule: Fileless execution via memfd_create (gVisor)
+  desc: Port of "Fileless execution via memfd_create". Uses the 'binary_info' optional field of sentry/execve.
+  condition: >
+    gvisor_spawned_process
+    and proc.is_exe_from_memfd = true
+    and not proc.name in (gvisor_known_memfd_execution_binaries)
+    and not proc.pname in (gvisor_known_memfd_execution_binaries)
+  output: >
+    Fileless execution via memfd_create | proc_cwd=%proc.cwd evt_res=%evt.res gparent=%proc.aname[2]
+    evt_type=%evt.type user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname
+    command=%proc.cmdline container_id=%gvisor.container_id
+  priority: CRITICAL
+  source: gvisor
+  tags: [gvisor, process, mitre_defense_evasion, T1620]
+
+- rule: Linux Kernel Module Injection Detected (gVisor)
+  desc: >
+    Port of "Linux Kernel Module Injection Detected". gVisor does not report capabilities, so the
+    thread.cap_effective condition is omitted (gVisor never loads host kernel modules; this detects the attempt).
+  condition: evt.type in (init_module, finit_module)
+  output: >
+    Linux Kernel Module injection attempt from container | parent_exepath=%proc.pexepath gparent=%proc.aname[2]
+    gexepath=%proc.aexepath[2] res=%evt.res evt_type=%evt.type user_uid=%user.uid process=%proc.name
+    proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline container_id=%gvisor.container_id
+  priority: WARNING
+  source: gvisor
+  tags: [gvisor, process, mitre_persistence, TA0003]

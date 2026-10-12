@@ -2,8 +2,10 @@ package gvisor
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"runtime"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -23,6 +25,7 @@ func (reader *fakeEventReader) Reader() io.ReadSeeker { return bytes.NewReader(r
 
 type fakeExtractRequest struct {
 	fieldName      string
+	argumentIndex  uint64
 	extractedValue any
 }
 
@@ -30,7 +33,7 @@ func (request *fakeExtractRequest) FieldID() uint64                             
 func (request *fakeExtractRequest) FieldType() uint32                                { return 0 }
 func (request *fakeExtractRequest) Field() string                                    { return request.fieldName }
 func (request *fakeExtractRequest) ArgKey() string                                   { return "" }
-func (request *fakeExtractRequest) ArgIndex() uint64                                 { return 0 }
+func (request *fakeExtractRequest) ArgIndex() uint64                                 { return request.argumentIndex }
 func (request *fakeExtractRequest) ArgPresent() bool                                 { return false }
 func (request *fakeExtractRequest) IsList() bool                                     { return false }
 func (request *fakeExtractRequest) SetValue(value interface{})                       { request.extractedValue = value }
@@ -72,6 +75,27 @@ func mustEncodePacket(t *testing.T, messageType pb.MessageType, message proto.Me
 	return packet
 }
 
+// newEnrichedEventReader は gVisor のメッセージにプロセス情報を付けた Falco のイベントを作る。
+func newEnrichedEventReader(t *testing.T, eventNumber uint64, context processContext, messageType pb.MessageType, message proto.Message) *fakeEventReader {
+	t.Helper()
+	eventData, err := encodeEnrichedEvent(context, mustEncodePacket(t, messageType, message))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &fakeEventReader{eventNumber: eventNumber, data: eventData}
+}
+
+// assertExtractedValues は各フィールドの抽出結果を比較する。値がないことを期待する場合は nil を指定する。
+func assertExtractedValues(t *testing.T, plugin *Plugin, eventReader sdk.EventReader, expectedValues map[string]any) {
+	t.Helper()
+	for fieldName, expectedValue := range expectedValues {
+		extractedValue := extractField(t, plugin, eventReader, fieldName)
+		if fmt.Sprint(extractedValue) != fmt.Sprint(expectedValue) || (extractedValue == nil) != (expectedValue == nil) {
+			t.Errorf("%s = %v (%T), want %v (%T)", fieldName, extractedValue, extractedValue, expectedValue, expectedValue)
+		}
+	}
+}
+
 func TestExtractTypedSyscall(t *testing.T) {
 	openMessage := &pb.Open{
 		ContextData: &pb.ContextData{
@@ -83,7 +107,7 @@ func TestExtractTypedSyscall(t *testing.T) {
 		Sysno:    openatSyscallNumber(t),
 		Pathname: "/etc/shadow",
 	}
-	eventReader := &fakeEventReader{eventNumber: 1, data: mustEncodePacket(t, pb.MessageType_MESSAGE_SYSCALL_OPEN, openMessage)}
+	eventReader := newEnrichedEventReader(t, 1, processContext{}, pb.MessageType_MESSAGE_SYSCALL_OPEN, openMessage)
 	plugin := &Plugin{}
 
 	expectedValues := map[string]any{
@@ -106,7 +130,7 @@ func TestExtractRawSyscall(t *testing.T) {
 		ContextData: &pb.ContextData{ProcessName: "sh"},
 		Sysno:       openatSyscallNumber(t),
 	}
-	eventReader := &fakeEventReader{eventNumber: 2, data: mustEncodePacket(t, pb.MessageType_MESSAGE_SYSCALL_RAW, rawSyscallMessage)}
+	eventReader := newEnrichedEventReader(t, 2, processContext{}, pb.MessageType_MESSAGE_SYSCALL_RAW, rawSyscallMessage)
 	plugin := &Plugin{}
 
 	if eventType := extractField(t, plugin, eventReader, "evt.type"); eventType != "openat" {
@@ -119,7 +143,7 @@ func TestExtractRawSyscall(t *testing.T) {
 
 func TestExtractNonSyscallPoint(t *testing.T) {
 	cloneMessage := &pb.CloneInfo{ContextData: &pb.ContextData{ProcessName: "bash"}}
-	eventReader := &fakeEventReader{eventNumber: 3, data: mustEncodePacket(t, pb.MessageType_MESSAGE_SENTRY_CLONE, cloneMessage)}
+	eventReader := newEnrichedEventReader(t, 3, processContext{}, pb.MessageType_MESSAGE_SENTRY_CLONE, cloneMessage)
 	plugin := &Plugin{}
 
 	if eventType := extractField(t, plugin, eventReader, "evt.type"); eventType != "sentry_clone" {
@@ -145,4 +169,30 @@ func TestDecodeRejectsMalformedPacket(t *testing.T) {
 	if _, err := decodeGVisorEvent(invalidHeaderSizePacket); err == nil {
 		t.Error("expected error for invalid header size")
 	}
+}
+
+func TestDecodeEnrichedEventRejectsPacketWithoutHeader(t *testing.T) {
+	packet := mustEncodePacket(t, pb.MessageType_MESSAGE_SYSCALL_OPEN, &pb.Open{})
+	if _, err := decodeEnrichedEvent(packet); err == nil {
+		t.Error("expected error for gVisor packet without process context header")
+	}
+}
+
+func TestProcessContextIsReducedWhenTooLarge(t *testing.T) {
+	hugeArgument := strings.Repeat("a", maxProcessContextBytes)
+	context := processContext{
+		Process:   &processInfo{PID: 2, Name: "child", Args: []string{hugeArgument}},
+		Ancestors: []processInfo{{PID: 1, Name: "parent", Args: []string{hugeArgument}}},
+	}
+	eventReader := newEnrichedEventReader(t, 1, context, pb.MessageType_MESSAGE_SYSCALL_OPEN, &pb.Open{
+		ContextData: &pb.ContextData{ThreadGroupId: 2},
+	})
+	if len(eventReader.data) > enrichedEventHeaderSize+maxProcessContextBytes+1024 {
+		t.Fatalf("event size = %d, process context was not reduced", len(eventReader.data))
+	}
+	assertExtractedValues(t, &Plugin{}, eventReader, map[string]any{
+		"proc.name":  "child",
+		"proc.pname": "parent",
+		"proc.args":  "",
+	})
 }

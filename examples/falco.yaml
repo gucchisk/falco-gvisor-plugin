@@ -14,8 +14,10 @@ plugins:
 load_plugins: [gvisor]
 
 rules_files:
-  - /etc/falco/gvisor_rules.yaml
-  # Falco 標準ルールを gVisor 用に移植したルール
+  # Falco 標準ルールを gVisor 用に移植したルール。通常のコンテナと同じ条件で検知する。
   - /etc/falco/gvisor_falco_rules.yaml
+  # 以下は Falco 標準ルールにない独自のルールのため、通常のコンテナと検知結果が揃わない。必要な場合だけ有効にする。
+  # シェルの起動をすべて検知するサンプルルール (標準ルールは端末付きのシェルだけを検知する)
+  # - /etc/falco/gvisor_rules.yaml
   # gVisor の全イベントをログに出す場合 (デバッグ・監査用)
-  - /etc/falco/gvisor_log_all_rules.yaml
+  # - /etc/falco/gvisor_log_all_rules.yaml

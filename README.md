@@ -106,6 +106,8 @@ syscall テーブル (`pkg/gvisor/syscalltable_*.go`) は `golang.org/x/sys` か
 
 2. ルールは `source: gvisor` を指定して書きます。例: [examples/gvisor_rules.yaml](examples/gvisor_rules.yaml)
 
+   通常のコンテナと同じ条件で検知したい場合は、Falco 標準ルールを移植した [examples/gvisor_falco_rules.yaml](examples/gvisor_falco_rules.yaml) だけを読み込みます。`gvisor_rules.yaml` は標準ルールにない独自のサンプル (シェルの起動をすべて検知するなど) のため、読み込むと通常のコンテナでは出ないログが出ます。
+
    ```yaml
    - rule: Shell Spawned In gVisor Sandbox
      condition: evt.type in (execve, execveat) and proc.name in (bash, sh)
